@@ -46,7 +46,10 @@ use futures::{FutureExt, Stream};
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fmt::{self, Debug, Display, Formatter};
+use std::fs::File;
 use std::future::Future;
+use std::io::Write;
+use std::os::unix::prelude::FromRawFd;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -96,6 +99,9 @@ pub enum BluetoothError {
     /// Error parsing a `Modalias` from a string.
     #[error(transparent)]
     ModaliasParseError(#[from] ParseModaliasError),
+    /// Error parsing write characteristic
+    #[error(transparent)]
+    WriteError(#[from] std::io::Error),
 }
 
 /// Error type for futures representing tasks spawned by this crate.
@@ -825,6 +831,27 @@ impl BluetoothSession {
         Ok(descriptor
             .write_value(value.into(), offset_to_propmap(offset))
             .await?)
+    }
+
+    pub async fn acquire_write_characteristic(
+        &self,
+        id: &CharacteristicId,
+        value: impl Into<Vec<u8>>,
+    ) -> Result<u16, BluetoothError> {
+        let characteristic = self.characteristic(id);
+        let (fd, mtu) = characteristic.acquire_write(PropMap::default()).await?;
+        let mut f = unsafe { File::from_raw_fd(fd.into_fd()) };
+        let mut value:&[u8]  = &value.into();
+        let len = mtu as usize - 3;
+        while value.len() > len {
+            let (left, right) = value.split_at(len);
+            value = right;
+            f.write_all(left)?;
+        }
+        if !value.is_empty(){
+            f.write_all(value)?;
+        }
+        Ok(mtu)
     }
 
     /// Start notifications on the given GATT characteristic.
